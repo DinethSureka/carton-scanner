@@ -5,7 +5,6 @@
     scanners / phones on the same network.
 
     Start: double-click start-server-powershell.bat
-    (that .bat contains a copy of this script - run build-bat.py after editing)
     Stop : close the window
     ===================================================================== #>
 
@@ -18,9 +17,7 @@ $Database = 'ContainerTracking'
 $ConnStr  = "Server=$Server;Database=$Database;Integrated Security=True;Connect Timeout=5;"
 
 $ErrorActionPreference = 'Stop'
-$Here = $PSScriptRoot
-if ($env:CS_HERE) { $Here = $env:CS_HERE }      # set when started from the .bat file
-$PagePath = Join-Path (Split-Path $Here -Parent) 'index.html'
+$PagePath = Join-Path (Split-Path $PSScriptRoot -Parent) 'index.html'
 $Utf8     = New-Object System.Text.UTF8Encoding($false)
 $Ascii    = [System.Text.Encoding]::ASCII
 
