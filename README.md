@@ -7,7 +7,17 @@ Scan cartons into a container. Every scan is saved to SQL Server with the
 Phone / PC browser  ──►  server (this PC, port 3000)  ──►  SQL Server: ContainerTracking.dbo.ContainerCartonScan
 ```
 
-## One-time setup (on the PC that has SQL Server)
+## Quick start – nothing to install (PowerShell)
+
+1. **Database** – in SSMS run `server/sql/setup.sql` (skip if `ContainerTracking` already exists).
+2. Double-click **`server/start-server-powershell.bat`** and keep the window open.
+3. Open **http://localhost:3000** in Chrome and scan.
+
+This version uses PowerShell, which is built into Windows. It works on the PC that runs it
+(`localhost`). To let phones on the network use it, use the Node.js version below.
+Server name and database are at the top of `server/server.ps1`.
+
+## Node.js version (also lets phones on the network connect)
 
 1. **Database** – in SSMS run `server/sql/setup.sql` (skip if `ContainerTracking` already exists).
 2. **Node.js** – install the LTS version from <https://nodejs.org>.
