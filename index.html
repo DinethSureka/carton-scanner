@@ -99,6 +99,16 @@
   .cam .msg:not(.ok):not(.err):not(.warn) { background: #222; color: var(--grey); }
 
   footer { text-align: center; color: var(--grey); font-size: .75rem; padding: 4px 16px 20px; }
+  footer a { color: var(--grey-text); }
+
+  /* database sync status */
+  .sync { display: inline-flex; align-items: center; gap: 6px; margin-top: 14px; font-size: .8rem; font-weight: 700;
+          padding: 5px 10px; border-radius: 999px; background: rgba(255,255,255,.1); color: var(--grey); }
+  .sync::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--grey); }
+  .sync.ok::before { background: #3DDC84; }
+  .sync.wait::before { background: var(--gold); }
+  .sync.off::before { background: #FF6B6B; }
+  .field + .field { margin-top: 16px; }
 </style>
 </head>
 <body>
@@ -114,8 +124,14 @@
   <div id="stepContainer" class="card welcome">
     <h2>Start a new container</h2>
     <p>Enter the container number, then scan each carton.</p>
-    <label for="containerInput">Container No</label>
-    <input type="text" id="containerInput" autocomplete="off" autocapitalize="characters" placeholder="e.g. MSCU1234567">
+    <div class="field">
+      <label for="userInput">Your name</label>
+      <input type="text" id="userInput" autocomplete="off" maxlength="50" placeholder="e.g. Dineth">
+    </div>
+    <div class="field">
+      <label for="containerInput">Container No</label>
+      <input type="text" id="containerInput" autocomplete="off" autocapitalize="characters" maxlength="20" placeholder="e.g. MSCU1234567">
+    </div>
     <button class="btn-primary" id="startBtn">Start Scanning ›</button>
   </div>
 
@@ -128,6 +144,7 @@
         <div class="of">cartons scanned · max <span id="maxLabel"></span></div>
       </div>
       <div class="bar"><div id="barFill"></div></div>
+      <div class="sync" id="syncStatus">Connecting to database…</div>
     </div>
 
     <div class="card" id="scanCard">
@@ -172,7 +189,7 @@
   </div>
 </div>
 
-<footer>Trilogi Logistics · Global Logistics Partner</footer>
+<footer>Trilogi Logistics · Global Logistics Partner · <a href="#" id="serverLink">Server</a></footer>
 
 <script>
 const MAX = 3000;
@@ -229,21 +246,166 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// ---- database sync ----
+// Every scan is put in a queue (kept in the browser, so nothing is lost if the
+// connection drops or the page is refreshed) and sent to the local server,
+// which saves it into SQL Server: ContainerTracking.dbo.ContainerCartonScan
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+};
+(() => { const p = new URLSearchParams(location.search).get('api'); if (p != null) LS.set('cs_api', p.trim()); })();
+
+function apiBase() {
+  const saved = LS.get('cs_api', '');
+  if (saved) return saved.replace(/\/+$/, '');
+  // opened from the local server -> same address; opened from GitHub Pages / a file -> this PC
+  return (/github\.io$/i.test(location.hostname) || location.protocol === 'file:') ? 'http://localhost:3000' : '';
+}
+
+let queue = LS.get('cs_queue', []);   // pending {type:'add'|'del', containerNumber, cartonId, userName, scannedAt}
+let online = null;                    // null = unknown, true / false = last result
+let flushing = false, inFlight = null, retryTimer = null;
+let userName = LS.get('cs_user', '');
+
+function saveQueue() { LS.set('cs_queue', queue); }
+
+function localStamp(d = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+async function api(method, path, body) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 8000);
+  try {
+    const r = await fetch(apiBase() + path, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ctl.signal
+    });
+    let data = {};
+    try { data = await r.json(); } catch (e) {}
+    return { status: r.status, data };
+  } finally { clearTimeout(t); }
+}
+
+function renderSync() {
+  const el = $('syncStatus');
+  const n = queue.length;
+  if (online === false) {
+    el.className = 'sync off';
+    el.textContent = n ? `Database offline · ${n} waiting to save` : 'Database offline';
+  } else if (n) {
+    el.className = 'sync wait';
+    el.textContent = `Saving… ${n} waiting`;
+  } else if (online) {
+    el.className = 'sync ok';
+    el.textContent = 'All scans saved to database';
+  } else {
+    el.className = 'sync';
+    el.textContent = 'Connecting to database…';
+  }
+}
+
+function enqueue(op) { queue.push(op); saveQueue(); renderSync(); flush(); }
+
+async function flush() {
+  if (flushing) return;
+  flushing = true;
+  clearTimeout(retryTimer);
+  try {
+    while (queue.length) {
+      const op = queue[0];
+      inFlight = op;
+      let res;
+      try { res = await api(op.type === 'del' ? 'DELETE' : 'POST', '/api/scans', op); }
+      catch (e) { online = false; break; }                  // server not reachable
+      if (res.status !== 400 && !(res.status >= 200 && res.status < 300)) { online = false; break; }
+      online = true;
+      if (res.status === 400) setMsg(`Not saved: ${op.cartonId} — ${res.data.error || 'invalid data'}`, 'warn');
+      const i = queue.indexOf(op);
+      if (i >= 0) queue.splice(i, 1);
+      saveQueue();
+      renderSync();
+    }
+  } finally {
+    inFlight = null;
+    flushing = false;
+    renderSync();
+    if (queue.length) retryTimer = setTimeout(flush, 5000);
+  }
+}
+
+async function checkHealth() {
+  try {
+    const r = await api('GET', '/api/health');
+    online = r.status === 200 && !!r.data.ok;
+  } catch (e) { online = false; }
+  renderSync();
+  if (online && queue.length) flush();
+  return online;
+}
+
+// cartons this container already has (saved earlier, or still waiting in the queue)
+async function loadExisting(c) {
+  const add = id => { if (!scanned.has(id)) { scanned.add(id); return true; } return false; };
+  const prior = [];
+  try {
+    const r = await api('GET', `/api/containers/${encodeURIComponent(c)}/cartons`);
+    if (r.status === 200 && r.data.ok) {
+      online = true;
+      if (c !== containerNo) return;
+      for (const row of r.data.cartons) if (add(row.CartonId)) prior.push(row.CartonId);
+    } else { online = false; }
+  } catch (e) { online = false; }
+  if (c !== containerNo) return;
+  for (const op of queue) {
+    if (op.containerNumber !== c) continue;
+    if (op.type === 'add' && add(op.cartonId)) prior.push(op.cartonId);
+    if (op.type === 'del' && scanned.delete(op.cartonId)) {
+      const i = prior.indexOf(op.cartonId);
+      if (i >= 0) prior.splice(i, 1);
+    }
+  }
+  order = prior.concat(order.filter(id => !prior.includes(id)));
+  renderSync();
+  render();
+  if (prior.length) setMsg(`Resumed — ${prior.length.toLocaleString()} carton(s) already saved for this container`, 'warn');
+  if (queue.length) flush();
+}
+
+$('serverLink').onclick = async e => {
+  e.preventDefault();
+  const v = prompt('Database server address (leave empty for the default)', LS.get('cs_api', '') || apiBase());
+  if (v === null) return;
+  LS.set('cs_api', v.trim());
+  online = null;
+  const ok = await checkHealth();
+  alert(ok ? 'Connected to the database ✓' : `Could not reach the server at ${apiBase() || location.origin}`);
+};
+
 // ---- step 1 ----
 function start() {
   const v = $('containerInput').value.trim().toUpperCase();
   if (!v) { $('containerInput').focus(); return; }
   containerNo = v;
+  userName = $('userInput').value.trim();
+  LS.set('cs_user', userName);
   scanned = new Set(); order = []; dupeCount = 0; active = true;
   $('containerLabel').textContent = containerNo;
   setMsg('Ready to scan');
   render();
+  renderSync();
   show('stepScan');
   $('scanInput').value = '';
   $('scanInput').focus();
+  loadExisting(containerNo);
 }
 $('startBtn').onclick = start;
 $('containerInput').addEventListener('keydown', e => { if (e.key === 'Enter') start(); });
+$('userInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('containerInput').focus(); });
 
 // ---- step 2 ----
 function handleScan(raw) {
@@ -265,6 +427,7 @@ function handleScan(raw) {
   }
   scanned.add(id);
   order.push(id);
+  enqueue({ type: 'add', containerNumber: containerNo, cartonId: id, userName, scannedAt: localStamp() });
   render(true);
   if (scanned.size === MAX) {
     setMsg(`✔ ${id} — limit of ${MAX.toLocaleString()} reached`, 'warn');
@@ -356,13 +519,24 @@ $('camClose').onclick = closeCamera;
 $('undoBtn').onclick = () => {
   const last = order.pop();
   if (last === undefined) { setMsg('Nothing to undo', 'warn'); }
-  else { scanned.delete(last); setMsg(`Removed: ${last}`, 'warn'); render(); }
+  else {
+    scanned.delete(last);
+    // not sent yet -> just drop it from the queue; already saved -> delete it from the database
+    const i = queue.findIndex(op => op.type === 'add' && op.containerNumber === containerNo && op.cartonId === last);
+    if (i >= 0 && queue[i] !== inFlight) { queue.splice(i, 1); saveQueue(); renderSync(); }
+    else enqueue({ type: 'del', containerNumber: containerNo, cartonId: last });
+    setMsg(`Removed: ${last}`, 'warn');
+    render();
+  }
   $('scanInput').focus();
 };
 
 $('finishBtn').onclick = () => {
   closeCamera();
-  if (!confirm(`Finish container ${containerNo} with ${scanned.size} cartons?`)) { $('scanInput').focus(); return; }
+  const waiting = queue.length
+    ? `\n\n${queue.length} scan(s) are still waiting to save to the database. Keep this page open until it shows "All scans saved".`
+    : '';
+  if (!confirm(`Finish container ${containerNo} with ${scanned.size} cartons?${waiting}`)) { $('scanInput').focus(); return; }
   active = false;
   $('doneContainer').textContent = containerNo;
   $('doneCount').textContent = scanned.size.toLocaleString();
@@ -378,12 +552,15 @@ $('newBtn').onclick = () => {
   $('containerInput').focus();
 };
 
-// warn before closing/refreshing mid-container (count is only held in memory)
+// warn before closing/refreshing while scans are still waiting to be saved
 window.addEventListener('beforeunload', e => {
-  if (active && scanned.size) { e.preventDefault(); e.returnValue = ''; }
+  if (queue.length) { e.preventDefault(); e.returnValue = ''; }
 });
 
-$('containerInput').focus();
+$('userInput').value = userName;
+(userName ? $('containerInput') : $('userInput')).focus();
+checkHealth();
+setInterval(() => { if (!flushing && !queue.length) checkHealth(); }, 30000);
 </script>
 </body>
 </html>

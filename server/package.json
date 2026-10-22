@@ -1,0 +1,17 @@
+{
+  "name": "carton-scanner-server",
+  "version": "1.0.0",
+  "description": "Saves Carton Scanner scans into SQL Server (ContainerTracking database)",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "mssql": "^11.0.1"
+  },
+  "optionalDependencies": {
+    "msnodesqlv8": "^4.5.0"
+  }
+}
