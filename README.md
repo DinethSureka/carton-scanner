@@ -11,13 +11,14 @@ Phone / PC browser  ──►  server (this PC, port 3000)  ──►  SQL Serve
 
 1. **Database** – in SSMS run `server/sql/setup.sql` (skip if `ContainerTracking` already exists).
 2. Double-click **`server/start-server-powershell.bat`** and keep the window open.
-3. Open **http://localhost:3000** in Chrome and scan.
+3. On this PC open **http://localhost:3000**. On a handheld scanner or phone on the same
+   Wi-Fi, open the **"On the scanner / phone"** address the window shows (e.g. `http://192.168.1.25:3000`).
 
-This version uses PowerShell, which is built into Windows. It works on the PC that runs it
-(`localhost`). To let phones on the network use it, use the Node.js version below.
+If the scanner can't open the page, Windows Firewall is blocking port 3000 on the PC.
+Ask IT to allow **inbound TCP port 3000** for this PC (no software install needed).
 Server name and database are at the top of `server/server.ps1`.
 
-## Node.js version (also lets phones on the network connect)
+## Node.js version (optional alternative)
 
 1. **Database** – in SSMS run `server/sql/setup.sql` (skip if `ContainerTracking` already exists).
 2. **Node.js** – install the LTS version from <https://nodejs.org>.

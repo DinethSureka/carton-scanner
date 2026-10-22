@@ -1,7 +1,8 @@
 <#  =====================================================================
     Carton Scanner - local server (PowerShell version, nothing to install)
     Saves every scan into SQL Server: ContainerTracking.dbo.ContainerCartonScan
-    and serves the scanner page at http://localhost:3000
+    and serves the scanner page on port 3000, to this PC and to handheld
+    scanners / phones on the same network.
 
     Start: double-click start-server-powershell.bat
     Stop : close the window
@@ -16,9 +17,9 @@ $Database = 'ContainerTracking'
 $ConnStr  = "Server=$Server;Database=$Database;Integrated Security=True;Connect Timeout=5;"
 
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Web -ErrorAction SilentlyContinue
 $PagePath = Join-Path (Split-Path $PSScriptRoot -Parent) 'index.html'
 $Utf8     = New-Object System.Text.UTF8Encoding($false)
+$Ascii    = [System.Text.Encoding]::ASCII
 
 # ---------- database ----------
 function Invoke-Sql([string]$Sql, [hashtable]$Params, [switch]$Rows) {
@@ -52,33 +53,82 @@ function Invoke-Sql([string]$Sql, [hashtable]$Params, [switch]$Rows) {
     } finally { $conn.Dispose() }
 }
 
-# ---------- http helpers ----------
-function Send($ctx, [int]$Status, $Body, [string]$Type = 'application/json; charset=utf-8') {
-    $res = $ctx.Response
-    $res.StatusCode = $Status
-    $res.Headers['Access-Control-Allow-Origin']  = '*'
-    $res.Headers['Access-Control-Allow-Methods'] = 'GET,POST,DELETE,OPTIONS'
-    $res.Headers['Access-Control-Allow-Headers'] = 'Content-Type'
-    if ($ctx.Request.Headers['Access-Control-Request-Private-Network']) {
-        $res.Headers['Access-Control-Allow-Private-Network'] = 'true'
+# ---------- minimal HTTP over TCP (no admin rights needed) ----------
+$StatusText = @{ 200 = 'OK'; 201 = 'Created'; 204 = 'No Content'; 400 = 'Bad Request';
+                 404 = 'Not Found'; 500 = 'Internal Server Error'; 503 = 'Service Unavailable' }
+
+function Read-Request($client) {
+    $client.ReceiveTimeout = 10000
+    $stream = $client.GetStream()
+    $buf = New-Object byte[] 16384
+    $ms  = New-Object System.IO.MemoryStream
+    $headerEnd = -1
+    while ($headerEnd -lt 0) {
+        $n = $stream.Read($buf, 0, $buf.Length)
+        if ($n -le 0) { return $null }
+        $ms.Write($buf, 0, $n)
+        if ($ms.Length -gt 1MB) { return $null }
+        $headerEnd = $Ascii.GetString($ms.ToArray()).IndexOf("`r`n`r`n")
     }
+    $all   = $ms.ToArray()
+    $lines = $Ascii.GetString($all, 0, $headerEnd) -split "`r`n"
+    $first = $lines[0] -split ' '
+    if ($first.Count -lt 2) { return $null }
+    $headers = @{}
+    foreach ($l in $lines[1..($lines.Count - 1)]) {
+        $i = $l.IndexOf(':')
+        if ($i -gt 0) { $headers[$l.Substring(0, $i).Trim().ToLower()] = $l.Substring($i + 1).Trim() }
+    }
+    $len = 0
+    if ($headers['content-length']) { $len = [int]$headers['content-length'] }
+    if ($len -gt 1MB) { return $null }
+    $bodyStart = $headerEnd + 4
+    while (($all.Length - $bodyStart) -lt $len) {
+        $n = $stream.Read($buf, 0, $buf.Length)
+        if ($n -le 0) { break }
+        $ms.Write($buf, 0, $n)
+        $all = $ms.ToArray()
+    }
+    $body = ''
+    if ($len -gt 0) { $body = $Utf8.GetString($all, $bodyStart, [Math]::Min($len, $all.Length - $bodyStart)) }
+    $target = $first[1]
+    $q = $target.IndexOf('?')
+    if ($q -ge 0) { $target = $target.Substring(0, $q) }
+    return [pscustomobject]@{
+        Method  = $first[0].ToUpper()
+        Path    = [System.Uri]::UnescapeDataString($target)
+        Headers = $headers
+        Body    = $body
+        Stream  = $stream
+    }
+}
+
+function Send($ctx, [int]$Status, $Body, [string]$Type = 'application/json; charset=utf-8') {
+    $bytes = New-Object byte[] 0
     if ($null -ne $Body) {
         if ($Body -is [byte[]]) { $bytes = $Body }
         elseif ($Body -is [string]) { $bytes = $Utf8.GetBytes($Body) }
         else { $bytes = $Utf8.GetBytes((ConvertTo-Json -InputObject $Body -Depth 5 -Compress)) }
-        $res.ContentType = $Type
-        $res.ContentLength64 = $bytes.Length
-        $res.OutputStream.Write($bytes, 0, $bytes.Length)
     }
-    $res.Close()
+    $h = "HTTP/1.1 $Status $($StatusText[$Status])`r`n" +
+         "Access-Control-Allow-Origin: *`r`n" +
+         "Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS`r`n" +
+         "Access-Control-Allow-Headers: Content-Type`r`n" +
+         "Cache-Control: no-store`r`n" +
+         "Connection: close`r`n" +
+         "Content-Length: $($bytes.Length)`r`n"
+    if ($ctx.Headers['access-control-request-private-network']) { $h += "Access-Control-Allow-Private-Network: true`r`n" }
+    if ($bytes.Length -gt 0) { $h += "Content-Type: $Type`r`n" }
+    $h += "`r`n"
+    $hb = $Ascii.GetBytes($h)
+    $ctx.Stream.Write($hb, 0, $hb.Length)
+    if ($bytes.Length -gt 0) { $ctx.Stream.Write($bytes, 0, $bytes.Length) }
+    $ctx.Stream.Flush()
 }
 
 function Read-Json($ctx) {
-    $sr = New-Object System.IO.StreamReader($ctx.Request.InputStream, $Utf8)
-    $text = $sr.ReadToEnd()
-    $sr.Close()
-    if ([string]::IsNullOrWhiteSpace($text)) { return New-Object PSObject }
-    return ConvertFrom-Json $text
+    if ([string]::IsNullOrWhiteSpace($ctx.Body)) { return New-Object PSObject }
+    return ConvertFrom-Json $ctx.Body
 }
 
 function Clean($v) { if ($null -eq $v) { return '' } return ([string]$v).Trim() }
@@ -100,9 +150,8 @@ function Db-Error($ctx, $err) {
 
 # ---------- request handler ----------
 function Handle($ctx) {
-    $req    = $ctx.Request
-    $method = $req.HttpMethod
-    $path   = [System.Uri]::UnescapeDataString($req.Url.AbsolutePath)
+    $method = $ctx.Method
+    $path   = $ctx.Path
 
     if ($method -eq 'OPTIONS') { Send $ctx 204 $null; return }
 
@@ -172,8 +221,7 @@ WHERE NOT EXISTS (SELECT 1 FROM dbo.ContainerCartonScan WITH (UPDLOCK, HOLDLOCK)
 }
 
 # ---------- start ----------
-$listener = New-Object System.Net.HttpListener
-$listener.Prefixes.Add("http://localhost:$Port/")
+$listener = New-Object System.Net.Sockets.TcpListener ([System.Net.IPAddress]::Any), $Port
 try { $listener.Start() }
 catch {
     Write-Host "Could not start on port $Port. Is the server already open in another window?" -ForegroundColor Red
@@ -181,9 +229,17 @@ catch {
     return
 }
 
+$ips = @()
+try {
+    $ips = [System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName()) |
+        Where-Object { $_.AddressFamily -eq 'InterNetwork' -and -not [System.Net.IPAddress]::IsLoopback($_) } |
+        ForEach-Object { $_.ToString() }
+} catch {}
+
 Write-Host ''
 Write-Host 'Carton Scanner server is running' -ForegroundColor Green
-Write-Host "  Open in Chrome:  http://localhost:$Port"
+Write-Host "  On this PC:              http://localhost:$Port"
+foreach ($ip in $ips) { Write-Host "  On the scanner / phone:  http://${ip}:$Port" -ForegroundColor Cyan }
 Write-Host '  Keep this window open while scanning. Close it to stop.'
 Write-Host ''
 try {
@@ -195,11 +251,37 @@ try {
 }
 Write-Host ''
 
-while ($listener.IsListening) {
-    $ctx = $listener.GetContext()
-    try { Handle $ctx }
-    catch {
-        Write-Host ("  Error: " + $_.Exception.Message) -ForegroundColor Red
-        try { Send $ctx 500 @{ ok = $false; error = $_.Exception.Message } } catch {}
+# Browsers open spare connections they may never use, so only serve a
+# connection once its request has arrived, and drop idle ones after 15s.
+$waiting = New-Object System.Collections.ArrayList
+while ($true) {
+    while ($listener.Pending()) {
+        [void]$waiting.Add(@{ client = $listener.AcceptTcpClient(); since = [DateTime]::UtcNow })
     }
+    $busy = $false
+    foreach ($w in @($waiting)) {
+        $client = $w.client
+        $ready = $false
+        try { $ready = $client.Available -gt 0 } catch {}
+        if ($ready) {
+            $waiting.Remove($w)
+            $busy = $true
+            try {
+                $ctx = Read-Request $client
+                if ($ctx) {
+                    try { Handle $ctx }
+                    catch {
+                        Write-Host ("  Error: " + $_.Exception.Message) -ForegroundColor Red
+                        try { Send $ctx 500 @{ ok = $false; error = $_.Exception.Message } } catch {}
+                    }
+                }
+            } catch {
+                # client disconnected or timed out - ignore
+            } finally { $client.Close() }
+        } elseif (([DateTime]::UtcNow - $w.since).TotalSeconds -gt 15) {
+            $waiting.Remove($w)
+            $client.Close()
+        }
+    }
+    if (-not $busy) { Start-Sleep -Milliseconds 15 }
 }
