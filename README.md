@@ -5,7 +5,7 @@ Scan cartons into containers from handheld scanners. Every scan is saved to SQL 
 dashboard with filters, charts and Excel/CSV downloads.
 
 ```
-Handheld scanner / PC browser  ──►  server (Node.js, port 3000)  ──►  SQL Server: ContainerTracking
+Handheld scanner / PC browser  ──►  server (Node.js, port 3000)  ──►  SQL Server (SSMS)  or  PostgreSQL (pgAdmin)
 ```
 
 ## Roles
@@ -19,9 +19,26 @@ Handheld scanner / PC browser  ──►  server (Node.js, port 3000)  ──►
 
 ## Setup (on the PC/desktop that runs the server)
 
-Needs: **SQL Server Express** (with SSMS) and **Node.js LTS** – installed by IT.
+Needs: **Node.js LTS**, plus **one** database: **SQL Server Express** (SSMS) *or* **PostgreSQL** (pgAdmin).
 
-1. **Database** – in SSMS run `server/sql/setup.sql` (creates `ContainerTracking`, the scan table and the users table).
+### Choosing the database
+After the first start, `server/config.json` exists. Set `dbType`:
+
+* **SQL Server** (default) – `"dbType": "sqlserver"`. Signs in with Windows (same as SSMS).
+  Run `server/sql/setup.sql` in SSMS once (or let the server create the tables).
+* **PostgreSQL** – `"dbType": "postgres"` and fill in the PostgreSQL login:
+  ```json
+  "dbType": "postgres",
+  "pgHost": "localhost", "pgPort": 5432,
+  "pgUser": "postgres", "pgPassword": "your password",
+  "pgDatabase": "container_tracking"
+  ```
+  The server creates the `container_tracking` database and its tables automatically
+  (tables `container_carton_scan` and `app_users`). Close and restart the server after editing.
+  On a shared PostgreSQL, ask its owner for a separate login rather than using theirs.
+
+
+1. **Database** – SQL Server: run `server/sql/setup.sql` in SSMS. PostgreSQL: nothing to do (see above).
 2. **Start the server** – double-click `server/start-server.bat` (first run installs packages).
    The window shows the addresses:
    ```
@@ -59,7 +76,16 @@ Browsers only allow the camera on `https` or `localhost`. Over `http://192.168.x
 scanner's trigger, or in Chrome on the phone enable
 `chrome://flags/#unsafely-treat-insecure-origin-as-secure` for the server address.
 
-## Reports in SSMS
+## Reports in pgAdmin (PostgreSQL)
+
+```sql
+SELECT * FROM container_carton_scan ORDER BY scan_date_time DESC;
+
+SELECT container_number, COUNT(*) AS cartons, MIN(scan_date_time) AS first_scan, MAX(scan_date_time) AS last_scan
+FROM container_carton_scan GROUP BY container_number ORDER BY last_scan DESC;
+```
+
+## Reports in SSMS (SQL Server)
 
 ```sql
 USE ContainerTracking;
@@ -80,6 +106,7 @@ SELECT UserName, FullName, Role, IsActive, LastLoginAt FROM dbo.AppUsers;
 | `login.html`, `dashboard.html`, `users.html` | Sign-in, dashboard, user admin |
 | `assets/` | Shared styles, scripts, logo |
 | `server/server.js` | Web server and API |
-| `server/db.js` | All SQL queries |
+| `server/db.js` | All SQL Server queries |
+| `server/db-pg.js` | All PostgreSQL queries |
 | `server/auth.js` | Passwords, sessions, roles |
 | `server/sql/setup.sql` | Database setup |

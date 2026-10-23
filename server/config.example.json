@@ -1,13 +1,18 @@
 {
   "port": 3000,
 
+  "dbType": "sqlserver",
+
   "server": "localhost\\SQLEXPRESS",
   "database": "ContainerTracking",
-
   "auth": "windows",
-
   "sqlUser": "",
   "sqlPassword": "",
+  "odbcDriver": "",
 
-  "odbcDriver": ""
+  "pgHost": "localhost",
+  "pgPort": 5432,
+  "pgUser": "postgres",
+  "pgPassword": "",
+  "pgDatabase": "container_tracking"
 }

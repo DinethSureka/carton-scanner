@@ -1,7 +1,7 @@
 /* =====================================================================
    Carton Scanner - server
    - Scanner page, dashboard, user admin, login
-   - Saves scans to SQL Server: ContainerTracking.dbo.ContainerCartonScan
+   - Saves scans to SQL Server or PostgreSQL ("dbType" in config.json)
    - Users and roles (Admin / Supervisor / User) in dbo.AppUsers
 
    Start:  start-server.bat   (or "npm start" in this folder)
@@ -13,7 +13,6 @@ const os = require('os');
 const path = require('path');
 const express = require('express');
 const auth = require('./auth');
-const db = process.env.CS_FAKE_DB ? require(process.env.CS_FAKE_DB) : require('./db');
 
 const ROOT = path.join(__dirname, '..');           // the site files (index.html, dashboard.html, ...)
 
@@ -22,12 +21,22 @@ const CONFIG_FILE = process.env.CS_CONFIG || path.join(__dirname, 'config.json')
 const ADMIN_FILE = path.join(path.dirname(CONFIG_FILE), 'FIRST-ADMIN-PASSWORD.txt');
 const defaults = {
   port: 3000,
+  dbType: 'sqlserver',      // "sqlserver" (SSMS) or "postgres" (pgAdmin)
+
+  // SQL Server
   server: 'localhost\\SQLEXPRESS',
   database: 'ContainerTracking',
   auth: 'windows',          // "windows" = same login as SSMS, "sql" = SQL login below
   sqlUser: '',
   sqlPassword: '',
-  odbcDriver: ''
+  odbcDriver: '',
+
+  // PostgreSQL
+  pgHost: 'localhost',
+  pgPort: 5432,
+  pgUser: 'postgres',
+  pgPassword: '',
+  pgDatabase: 'container_tracking'
 };
 let fileCfg = {};
 if (fs.existsSync(CONFIG_FILE)) {
@@ -41,6 +50,8 @@ if (!cfg.sessionSecret) {                           // created once, keeps peopl
   catch (e) { console.warn('Could not save sessionSecret to config.json - users will need to log in again after a restart.'); }
 }
 auth.setSecret(cfg.sessionSecret);
+const db = process.env.CS_FAKE_DB ? require(process.env.CS_FAKE_DB)
+  : String(cfg.dbType).toLowerCase().startsWith('postgres') ? require('./db-pg') : require('./db');
 db.init(cfg);
 const PORT = Number(process.env.PORT || cfg.port || 3000);
 
@@ -425,7 +436,7 @@ app.listen(PORT, '0.0.0.0', async () => {
   console.log('');
   try { await ensureReady(); }
   catch (e) {
-    console.error('Could not connect to SQL Server yet:', e.message);
+    console.error(`Could not connect to the database yet (${cfg.dbType}):`, e.message);
     console.error('The server keeps running and will retry on the next request.');
   }
 });
