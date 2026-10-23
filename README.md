@@ -13,9 +13,8 @@ Handheld scanner / PC browser  ──►  server (Node.js, port 3000)  ──►
 | | User | Supervisor | Admin |
 |---|:-:|:-:|:-:|
 | Scan cartons | ✓ | ✓ | ✓ |
-| Undo own last scan | ✓ | ✓ | ✓ |
 | Dashboard, filters, downloads | own scans only | all data | all data |
-| Delete any scan | | ✓ | ✓ |
+| Delete a wrong scan (dashboard) | | ✓ | ✓ |
 | Add users, change roles, reset passwords | | | ✓ |
 
 ## Setup (on the PC/desktop that runs the server)

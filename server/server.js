@@ -220,21 +220,6 @@ app.post('/api/scans', requireLogin(), route(async (req, res) => {
   }
 }));
 
-// Undo from the scanner: a User may remove only their own scans
-app.delete('/api/scans', requireLogin(), route(async (req, res) => {
-  const c = cleanContainer(req.body.containerNumber);
-  const k = clean(req.body.cartonId);
-  const err = validateScan(c, k);
-  if (err) return bad(res, err);
-  const scan = await db.getScan(c, k);
-  if (!scan) return res.json({ ok: true, deleted: 0 });
-  if (!auth.can.deleteAnyScan(req.user.Role) &&
-      String(scan.UserName || '').toLowerCase() !== req.user.UserName.toLowerCase()) {
-    return bad(res, 'You can only remove cartons you scanned yourself', 403);
-  }
-  res.json({ ok: true, deleted: await db.deleteScanById(scan.Id) });
-}));
-
 // ---------- reports / dashboard ----------
 function filtersFrom(req) {
   const f = {

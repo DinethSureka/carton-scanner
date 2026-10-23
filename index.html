@@ -154,7 +154,6 @@
     </div>
 
     <div class="row" style="margin-bottom:14px">
-      <button class="btn-light" id="undoBtn">↶ Undo last</button>
       <button class="btn-dark" id="finishBtn">Finish ✓</button>
     </div>
 
@@ -196,7 +195,7 @@ const $ = id => document.getElementById(id);
 
 let containerNo = '';
 let scanned = new Set();   // unique carton IDs (in memory only)
-let order = [];            // scan order, for undo + recent list
+let order = [];            // scan order, for the recent list
 let dupeCount = 0;
 let active = false;
 
@@ -255,7 +254,7 @@ const LS = {
 };
 let me = null;                        // signed-in user {userName, fullName, role}
 let userName = '';
-let queue = [];                       // pending {type:'add'|'del', containerNumber, cartonId, scannedAt} - kept per user
+let queue = [];                       // pending {type:'add', containerNumber, cartonId, scannedAt} - kept per user
 let online = null;                    // null = unknown, true / false = last result
 let signedOut = false;                // session expired: scans keep queuing until the user signs in again
 let flushing = false, inFlight = null, retryTimer = null;
@@ -315,9 +314,10 @@ async function flush() {
   try {
     while (queue.length) {
       const op = queue[0];
+      if (op.type !== 'add') { queue.shift(); saveQueue(); continue; }   // left over from the old Undo button
       inFlight = op;
       let res;
-      try { res = await api(op.type === 'del' ? 'DELETE' : 'POST', '/api/scans', op); }
+      try { res = await api('POST', '/api/scans', op); }
       catch (e) { online = false; break; }                  // server not reachable
       if (res.status === 401 || (res.status === 403 && res.data.mustChangePassword)) { signedOut = true; break; }
       if (res.status !== 400 && res.status !== 403 && !(res.status >= 200 && res.status < 300)) { online = false; break; }
@@ -501,21 +501,6 @@ function closeCamera() {
 
 $('camBtn').onclick = openCamera;
 $('camClose').onclick = closeCamera;
-
-$('undoBtn').onclick = () => {
-  const last = order.pop();
-  if (last === undefined) { setMsg('Nothing to undo', 'warn'); }
-  else {
-    scanned.delete(last);
-    // not sent yet -> just drop it from the queue; already saved -> delete it from the database
-    const i = queue.findIndex(op => op.type === 'add' && op.containerNumber === containerNo && op.cartonId === last);
-    if (i >= 0 && queue[i] !== inFlight) { queue.splice(i, 1); saveQueue(); renderSync(); }
-    else enqueue({ type: 'del', containerNumber: containerNo, cartonId: last });
-    setMsg(`Removed: ${last}`, 'warn');
-    render();
-  }
-  $('scanInput').focus();
-};
 
 $('finishBtn').onclick = () => {
   closeCamera();
