@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#F5B21F">
+<title>Carton Scanner Dashboard</title>
+<link rel="icon" href="/assets/logo.png">
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<main>
+  <div class="page-head">
+    <div><h1>Dashboard</h1><p id="scopeNote">Cartons scanned into containers</p></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-light" id="xlsxBtn" title="Scans and container summary, current filters">⬇ Excel</button>
+      <button class="btn btn-light" id="csvBtn" title="The table below, current filters">⬇ CSV</button>
+    </div>
+  </div>
+
+  <!-- filters: one row above everything -->
+  <form class="card filters" id="filters" style="margin-bottom:14px">
+    <div class="f">
+      <label for="period">Period</label>
+      <select id="period">
+        <option value="today">Today</option>
+        <option value="yesterday">Yesterday</option>
+        <option value="7" selected>Last 7 days</option>
+        <option value="30">Last 30 days</option>
+        <option value="month">This month</option>
+        <option value="all">All time</option>
+        <option value="custom">Custom dates</option>
+      </select>
+    </div>
+    <div class="f"><label for="from">From</label><input type="date" id="from"></div>
+    <div class="f"><label for="to">To</label><input type="date" id="to"></div>
+    <div class="f wide"><label for="container">Container</label><input type="search" id="container" placeholder="Any" autocapitalize="characters"></div>
+    <div class="f wide"><label for="carton">Carton ID</label><input type="search" id="carton" placeholder="Any"></div>
+    <div class="f" id="userBox"><label for="user">User</label><select id="user"><option value="">All users</option></select></div>
+    <div class="actions">
+      <button class="btn btn-primary">Apply</button>
+      <button type="button" class="btn btn-light" id="resetBtn">Reset</button>
+    </div>
+  </form>
+
+  <div class="grid kpis" style="margin-bottom:14px">
+    <div class="card kpi accent"><div class="label">Cartons scanned</div><div class="value" id="kCartons">–</div><div class="sub" id="kRange">&nbsp;</div></div>
+    <div class="card kpi"><div class="label">Containers</div><div class="value" id="kContainers">–</div><div class="sub">with at least one carton</div></div>
+    <div class="card kpi"><div class="label">Avg cartons / container</div><div class="value" id="kAvg">–</div><div class="sub">&nbsp;</div></div>
+    <div class="card kpi"><div class="label">Scanned by</div><div class="value" id="kUsers">–</div><div class="sub">users</div></div>
+  </div>
+
+  <div class="grid charts" style="margin-bottom:14px">
+    <div class="card chart chart-days"><h2>Cartons per day</h2><div id="chDays"></div></div>
+    <div class="card chart"><h2>Top containers</h2><div id="chContainers" class="hbars"></div></div>
+    <div class="card chart" id="byUserCard"><h2>Cartons by user</h2><div id="chUsers" class="hbars"></div></div>
+  </div>
+
+  <div class="card">
+    <div class="tabs">
+      <button type="button" data-tab="containers" class="active">Containers</button>
+      <button type="button" data-tab="scans">All scans</button>
+    </div>
+    <div class="table-tools">
+      <div class="count" id="tCount">&nbsp;</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <label for="pageSize" style="margin:0">Rows</label>
+        <select id="pageSize" style="width:auto"><option>25</option><option selected>50</option><option>100</option><option>250</option></select>
+      </div>
+    </div>
+    <div class="table-wrap"><table><thead id="tHead"></thead><tbody id="tBody"></tbody></table></div>
+    <div class="pager">
+      <span id="pInfo"></span>
+      <button type="button" class="btn btn-light btn-sm" id="prevBtn">‹ Prev</button>
+      <button type="button" class="btn btn-light btn-sm" id="nextBtn">Next ›</button>
+    </div>
+  </div>
+</main>
+<div class="tip hidden" id="tip"></div>
+
+<script src="/assets/app.js"></script>
+<script>
+const { esc, fmt, api, toast } = CS;
+const $ = id => document.getElementById(id);
+let me, canAll = false;
+const state = { tab: 'containers', page: 1, sort: '', dir: 'desc', pageSize: 50 };
+
+// ---------- dates ----------
+const pad = n => String(n).padStart(2, '0');
+const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+function periodRange(p) {
+  const t = new Date(); t.setHours(0, 0, 0, 0);
+  const back = n => { const d = new Date(t); d.setDate(d.getDate() - n); return d; };
+  switch (p) {
+    case 'today': return [ymd(t), ymd(t)];
+    case 'yesterday': return [ymd(back(1)), ymd(back(1))];
+    case '7': return [ymd(back(6)), ymd(t)];
+    case '30': return [ymd(back(29)), ymd(t)];
+    case 'month': return [ymd(new Date(t.getFullYear(), t.getMonth(), 1)), ymd(t)];
+    case 'all': return ['', ''];
+    default: return null;
+  }
+}
+$('period').onchange = () => {
+  const r = periodRange($('period').value);
+  if (r) { [$('from').value, $('to').value] = r; apply(); }
+  else $('from').focus();
+};
+['from', 'to'].forEach(id => $(id).addEventListener('change', () => { $('period').value = 'custom'; }));
+
+// ---------- filters <-> URL ----------
+function filters() {
+  return { from: $('from').value, to: $('to').value, container: $('container').value.trim().toUpperCase(),
+           carton: $('carton').value.trim(), user: canAll ? $('user').value : '' };
+}
+function qs(extra = {}) {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries({ ...filters(), ...extra })) if (v !== '' && v != null) p.set(k, v);
+  return p.toString();
+}
+function saveUrl() {
+  const p = new URLSearchParams(qs({ period: $('period').value, tab: state.tab }));
+  history.replaceState(null, '', '/dashboard' + (p.toString() ? '?' + p : ''));
+}
+function loadUrl() {
+  const p = new URLSearchParams(location.search);
+  const period = p.get('period') || (p.get('from') || p.get('to') ? 'custom' : '7');
+  $('period').value = [...$('period').options].some(o => o.value === period) ? period : '7';
+  const r = periodRange($('period').value);
+  if (r) [$('from').value, $('to').value] = r;
+  else { $('from').value = p.get('from') || ''; $('to').value = p.get('to') || ''; }
+  $('container').value = p.get('container') || '';
+  $('carton').value = p.get('carton') || '';
+  state.pendingUser = p.get('user') || '';
+  if (p.get('tab') === 'scans') state.tab = 'scans';
+}
+
+$('filters').onsubmit = e => { e.preventDefault(); apply(); };
+$('resetBtn').onclick = () => {
+  $('period').value = '7'; [$('from').value, $('to').value] = periodRange('7');
+  $('container').value = ''; $('carton').value = ''; $('user').value = '';
+  apply();
+};
+function apply() { state.page = 1; saveUrl(); loadSummary(); loadTable(); }
+
+// ---------- summary + charts ----------
+const tip = $('tip');
+function showTip(e, html) { tip.innerHTML = html; tip.classList.remove('hidden'); moveTip(e); }
+function moveTip(e) {
+  const w = tip.offsetWidth;
+  tip.style.left = Math.min(window.innerWidth - w - 8, e.clientX + 12) + 'px';
+  tip.style.top = (e.clientY - 38) + 'px';
+}
+const hideTip = () => tip.classList.add('hidden');
+
+function niceMax(v) {
+  if (v <= 4) return 4;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
+  return 10 * p;
+}
+const compact = n => n >= 1000 ? (n / 1000).toFixed(n % 1000 ? 1 : 0).replace(/\.0$/, '') + 'K' : String(n);
+const dayLabel = s => { const d = new Date(s + 'T00:00:00'); return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); };
+
+function fillDays(rows, f) {
+  if (!rows.length) return [];
+  const map = new Map(rows.map(r => [r.Day, r.Cartons]));
+  let start = new Date((f.from || rows[0].Day) + 'T00:00:00');
+  const end = new Date((f.to || rows[rows.length - 1].Day) + 'T00:00:00');
+  const out = [];
+  const maxDays = 62;
+  const span = Math.round((end - start) / 864e5) + 1;
+  if (span > maxDays) start = new Date(end.getTime() - (maxDays - 1) * 864e5);
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) out.push({ Day: ymd(d), Cartons: map.get(ymd(d)) || 0 });
+  return out;
+}
+
+function drawDays(data) {
+  const box = $('chDays');
+  if (!data.length || !data.some(d => d.Cartons)) { box.innerHTML = '<div class="empty">No scans in this period</div>'; return; }
+  const W = Math.max(280, box.clientWidth), H = 230, L = 40, R = 8, T = 18, B = 26;
+  const max = niceMax(Math.max(...data.map(d => d.Cartons)));
+  const slot = (W - L - R) / data.length;
+  const bw = Math.max(3, Math.min(24, slot - 2));               // <=24px, 2px air between neighbours
+  const y = v => T + (H - T - B) * (1 - v / max);
+  const ticks = [0, max / 4, max / 2, max * 3 / 4, max];
+  const every = Math.ceil(data.length / Math.max(1, Math.floor((W - L) / 54)));
+  const peak = data.reduce((a, b) => (b.Cartons > a.Cartons ? b : a));
+  let s = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Cartons per day"><g class="axis">`;
+  for (const t of ticks) s += `<line x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}"/><text x="${L - 6}" y="${y(t) + 4}" text-anchor="end">${compact(t)}</text>`;
+  data.forEach((d, i) => {
+    if (i % every === 0) s += `<text x="${L + slot * i + slot / 2}" y="${H - 8}" text-anchor="middle">${esc(dayLabel(d.Day))}</text>`;
+  });
+  s += '</g>';
+  data.forEach((d, i) => {
+    const x = L + slot * i + (slot - bw) / 2, top = y(d.Cartons), base = y(0), r = Math.min(4, bw / 2, base - top);
+    const path = d.Cartons
+      ? `M${x},${base} V${top + r} Q${x},${top} ${x + r},${top} H${x + bw - r} Q${x + bw},${top} ${x + bw},${top + r} V${base} Z`
+      : '';
+    s += `<g data-i="${i}"><rect class="hit" x="${L + slot * i}" y="${T}" width="${slot}" height="${H - T - B}"/>${path ? `<path class="bar" d="${path}"/>` : ''}</g>`;
+  });
+  const pi = data.indexOf(peak);
+  s += `<text class="lbl" x="${L + slot * pi + slot / 2}" y="${y(peak.Cartons) - 5}" text-anchor="middle">${fmt(peak.Cartons)}</text></svg>`;
+  box.innerHTML = s;
+  box.querySelectorAll('g[data-i]').forEach(g => {
+    const d = data[g.dataset.i];
+    g.addEventListener('mousemove', e => showTip(e, `${esc(new Date(d.Day + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }))} · <b>${fmt(d.Cartons)}</b> cartons`));
+    g.addEventListener('mouseleave', hideTip);
+    g.addEventListener('click', () => {           // drill into that day
+      $('period').value = 'custom'; $('from').value = d.Day; $('to').value = d.Day; hideTip(); apply();
+    });
+  });
+}
+
+function drawBars(el, rows, onPick) {
+  if (!rows.length) { el.innerHTML = '<div class="empty">No data</div>'; return; }
+  const max = Math.max(...rows.map(r => r.Cartons));
+  el.innerHTML = rows.map((r, i) => `
+    <div class="hbar" data-i="${i}" title="${esc(r.Name)}: ${fmt(r.Cartons)} cartons">
+      <span class="n">${esc(r.Name)}</span>
+      <span class="track"><div class="fill" style="width:${(r.Cartons / max * 100).toFixed(1)}%"></div></span>
+      <span class="v">${fmt(r.Cartons)}</span>
+    </div>`).join('');
+  el.querySelectorAll('.hbar').forEach(b => b.onclick = () => onPick(rows[b.dataset.i].Name));
+}
+
+async function loadSummary() {
+  const r = await api('GET', '/api/report/summary?' + qs());
+  if (!r.data.ok) { toast(r.data.error || 'Could not load the dashboard'); return; }
+  const t = r.data.totals || {};
+  $('kCartons').textContent = fmt(t.Cartons);
+  $('kContainers').textContent = fmt(t.Containers);
+  $('kUsers').textContent = fmt(t.Users);
+  $('kAvg').textContent = t.Containers ? (t.Cartons / t.Containers).toFixed(1) : '–';
+  $('kRange').textContent = t.FirstScan ? `${t.FirstScan.slice(0, 16)} → ${t.LastScan.slice(0, 16)}` : 'No scans';
+  drawDays(fillDays(r.data.byDay, filters()));
+  drawBars($('chContainers'), r.data.byContainer, name => { $('container').value = name; switchTab('scans'); apply(); });
+  if (canAll) drawBars($('chUsers'), r.data.byUser, name => { if (name !== '(none)') { $('user').value = name; apply(); } });
+}
+
+// ---------- table ----------
+const COLS = {
+  containers: [
+    { k: 'container', t: 'Container No', f: r => `<a class="link" data-c="${esc(r.ContainerNumber)}">${esc(r.ContainerNumber)}</a>` },
+    { k: 'cartons', t: 'Cartons', r: true, f: r => fmt(r.Cartons) },
+    { k: 'first', t: 'First scan', f: r => esc(r.FirstScan) },
+    { k: 'last', t: 'Last scan', f: r => esc(r.LastScan) },
+    { t: 'Users', f: r => esc(r.Users || '') }
+  ],
+  scans: [
+    { k: 'container', t: 'Container No', f: r => `<a class="link" data-c="${esc(r.ContainerNumber)}">${esc(r.ContainerNumber)}</a>` },
+    { k: 'carton', t: 'Carton ID', cls: 'mono', f: r => esc(r.CartonId) },
+    { k: 'time', t: 'Scan date & time', f: r => esc(r.ScanDateTime) },
+    { k: 'user', t: 'User', f: r => esc(r.UserName || '') }
+  ]
+};
+const DEFAULT_SORT = { containers: 'last', scans: 'time' };
+
+function switchTab(tab) {
+  state.tab = tab; state.page = 1; state.sort = ''; state.dir = 'desc';
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+}
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { switchTab(b.dataset.tab); saveUrl(); loadTable(); });
+$('pageSize').onchange = () => { state.pageSize = Number($('pageSize').value); state.page = 1; loadTable(); };
+$('prevBtn').onclick = () => { if (state.page > 1) { state.page--; loadTable(); } };
+$('nextBtn').onclick = () => { state.page++; loadTable(); };
+
+async function loadTable() {
+  const cols = COLS[state.tab].slice();
+  const canDelete = state.tab === 'scans' && canAll;
+  const sort = state.sort || DEFAULT_SORT[state.tab];
+  $('tHead').innerHTML = '<tr>' + cols.map(c => c.k
+    ? `<th class="sort ${c.r ? 'r' : ''}" data-k="${c.k}">${c.t} <span class="arr">${sort === c.k ? (state.dir === 'asc' ? '▲' : '▼') : ''}</span></th>`
+    : `<th>${c.t}</th>`).join('') + (canDelete ? '<th></th>' : '') + '</tr>';
+  $('tHead').querySelectorAll('th.sort').forEach(th => th.onclick = () => {
+    const k = th.dataset.k;
+    if ((state.sort || DEFAULT_SORT[state.tab]) === k) state.dir = state.dir === 'asc' ? 'desc' : 'asc';
+    else { state.sort = k; state.dir = ['container', 'carton', 'user'].includes(k) ? 'asc' : 'desc'; }
+    state.page = 1; loadTable();
+  });
+  const span = cols.length + (canDelete ? 1 : 0);
+  $('tBody').innerHTML = `<tr><td colspan="${span}" class="table-empty">Loading…</td></tr>`;
+  const r = await api('GET', `/api/report/${state.tab}?` + qs({ page: state.page, pageSize: state.pageSize, sort, dir: state.dir }));
+  if (!r.data.ok) { $('tBody').innerHTML = `<tr><td colspan="${span}" class="table-empty">${esc(r.data.error || 'Error')}</td></tr>`; return; }
+  const { rows, total } = r.data;
+  const pages = Math.max(1, Math.ceil(total / state.pageSize));
+  if (state.page > pages) { state.page = pages; return loadTable(); }
+  $('tCount').textContent = `${fmt(total)} ${state.tab === 'scans' ? 'carton scans' : 'containers'}`;
+  $('pInfo').textContent = `Page ${state.page} of ${fmt(pages)}`;
+  $('prevBtn').disabled = state.page <= 1;
+  $('nextBtn').disabled = state.page >= pages;
+  $('tBody').innerHTML = rows.length ? rows.map(row => '<tr>' + cols.map(c =>
+      `<td class="${c.r ? 'r num' : ''} ${c.cls || ''}">${c.f(row)}</td>`).join('') +
+      (canDelete ? `<td class="r"><button class="btn btn-danger btn-sm" data-del="${row.Id}" data-label="${esc(row.ContainerNumber)} / ${esc(row.CartonId)}">Delete</button></td>` : '') +
+      '</tr>').join('')
+    : `<tr><td colspan="${span}" class="table-empty">No data for these filters</td></tr>`;
+}
+
+$('tBody').addEventListener('click', async e => {
+  const link = e.target.closest('[data-c]');
+  if (link) { $('container').value = link.dataset.c; switchTab('scans'); apply(); return; }
+  const del = e.target.closest('[data-del]');
+  if (del) {
+    if (!confirm(`Delete this scan?\n\n${del.dataset.label}\n\nThis removes it from the database.`)) return;
+    const r = await api('DELETE', `/api/report/scans/${del.dataset.del}`, {});
+    if (!r.data.ok) return toast(r.data.error || 'Could not delete');
+    toast('Scan deleted'); loadSummary(); loadTable();
+  }
+});
+
+// ---------- downloads ----------
+function download(format) {
+  const url = `/api/report/export?` + qs({ format, view: state.tab });
+  const a = document.createElement('a');
+  a.href = url; a.download = '';
+  document.body.appendChild(a); a.click(); a.remove();
+  toast('Preparing download…');
+}
+$('xlsxBtn').onclick = () => download('xlsx');
+$('csvBtn').onclick = () => download('csv');
+
+// ---------- start ----------
+(async () => {
+  me = await CS.requireUser();
+  canAll = me.role === 'Admin' || me.role === 'Supervisor';
+  CS.header(me, 'dashboard');
+  loadUrl();
+  if (canAll) {
+    const r = await api('GET', '/api/report/users');
+    if (r.data.ok) $('user').innerHTML = '<option value="">All users</option>' +
+      r.data.users.map(u => `<option ${u === state.pendingUser ? 'selected' : ''}>${esc(u)}</option>`).join('');
+  } else {
+    $('userBox').classList.add('hidden');
+    $('byUserCard').classList.add('hidden');
+    $('scopeNote').textContent = 'Showing only the cartons you scanned';
+    document.querySelector('.charts').style.gridTemplateColumns = '2fr 1fr';
+  }
+  switchTab(state.tab);
+  apply();
+  let rt;
+  window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(loadSummary, 200); });
+})();
+</script>
+</body>
+</html>

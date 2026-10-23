@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#F5B21F">
+<title>Carton Scanner Users</title>
+<link rel="icon" href="/assets/logo.png">
+<link rel="stylesheet" href="/assets/app.css">
+<style>
+  .roles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
+  .roles .card { padding: 12px 14px; font-size: .88rem; color: var(--ink-2); }
+  .roles .card b { display: block; margin-bottom: 4px; }
+  .actions { display: flex; gap: 6px; justify-content: flex-end; }
+  tr.inactive td { color: var(--faint); }
+  @media (max-width: 720px) { .roles { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="page-head">
+    <div><h1>Users</h1><p>Add people, choose their role, reset passwords.</p></div>
+    <button class="btn btn-primary" id="addBtn">+ Add user</button>
+  </div>
+
+  <div class="roles">
+    <div class="card"><b><span class="role Admin">Admin</span></b>Everything a supervisor can do, plus managing users.</div>
+    <div class="card"><b><span class="role Supervisor">Supervisor</span></b>Scan, see all data on the dashboard, download, delete wrong scans.</div>
+    <div class="card"><b><span class="role User">User</span></b>Scan cartons. Dashboard shows only their own scans.</div>
+  </div>
+
+  <div class="card">
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>User name</th><th>Full name</th><th>Role</th><th>Status</th><th class="r">Scans</th><th>Last login</th><th>Created</th><th></th></tr></thead>
+        <tbody id="rows"><tr><td colspan="8" class="table-empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script src="/assets/app.js"></script>
+<script>
+const { esc, fmt, api, modal, toast } = CS;
+let me = null, users = [];
+const roleOptions = sel => ['User', 'Supervisor', 'Admin'].map(r => `<option ${r === sel ? 'selected' : ''}>${r}</option>`).join('');
+
+function showPassword(title, userName, pw) {
+  const m = modal(`
+    <h3>${esc(title)}</h3>
+    <p>Give this temporary password to <b>${esc(userName)}</b>. They will choose their own password when they first sign in.</p>
+    <div class="secret">${esc(pw)}</div>
+    <div class="foot"><button class="btn btn-light" data-copy>Copy</button><button class="btn btn-primary" data-x>Done</button></div>`);
+  m.el.querySelector('[data-x]').onclick = m.close;
+  m.el.querySelector('[data-copy]').onclick = async () => {
+    try { await navigator.clipboard.writeText(pw); toast('Copied'); } catch (e) { toast('Select the password and copy it'); }
+  };
+}
+
+async function load() {
+  const r = await api('GET', '/api/users');
+  if (!r.data.ok) { document.getElementById('rows').innerHTML = `<tr><td colspan="8" class="table-empty">${esc(r.data.error)}</td></tr>`; return; }
+  users = r.data.users;
+  document.getElementById('rows').innerHTML = users.map(u => `
+    <tr class="${u.IsActive ? '' : 'inactive'}">
+      <td><b>${esc(u.UserName)}</b>${u.UserId === me.id ? ' <span class="pill warn">you</span>' : ''}</td>
+      <td>${esc(u.FullName || '')}</td>
+      <td><span class="role ${esc(u.Role)}">${esc(u.Role)}</span></td>
+      <td>${u.IsActive ? '<span class="pill on">Active</span>' : '<span class="pill off">Inactive</span>'}
+          ${u.MustChangePassword && u.IsActive ? ' <span class="pill warn">temp password</span>' : ''}</td>
+      <td class="r num">${fmt(u.Scans)}</td>
+      <td class="num">${esc(u.LastLoginAt || '—')}</td>
+      <td class="num">${esc((u.CreatedAt || '').slice(0, 10))}</td>
+      <td><div class="actions"><button class="btn btn-light btn-sm" data-edit="${u.UserId}">Edit</button></div></td>
+    </tr>`).join('') || '<tr><td colspan="8" class="table-empty">No users</td></tr>';
+}
+
+document.getElementById('rows').addEventListener('click', e => {
+  const b = e.target.closest('[data-edit]');
+  if (b) edit(users.find(u => u.UserId === Number(b.dataset.edit)));
+});
+
+document.getElementById('addBtn').onclick = () => {
+  const m = modal(`
+    <h3>Add user</h3>
+    <form>
+      <div class="field"><label for="nu">User name</label><input type="text" id="nu" required maxlength="50" autocapitalize="none" spellcheck="false" placeholder="e.g. ahmed.k"></div>
+      <div class="field"><label for="nf">Full name</label><input type="text" id="nf" maxlength="100" placeholder="e.g. Ahmed Khan"></div>
+      <div class="field"><label for="nr">Role</label><select id="nr">${roleOptions('User')}</select></div>
+      <div class="field"><label for="np">Temporary password <span style="text-transform:none;font-weight:400">(leave empty to generate one)</span></label>
+        <input type="text" id="np" autocomplete="off" maxlength="100"></div>
+      <div class="alert err hidden"></div>
+      <div class="foot"><button type="button" class="btn btn-light" data-x>Cancel</button><button class="btn btn-primary">Add user</button></div>
+    </form>`);
+  const $m = s => m.el.querySelector(s), err = $m('.alert');
+  $m('[data-x]').onclick = m.close;
+  $m('#nu').focus();
+  $m('form').onsubmit = async e => {
+    e.preventDefault();
+    const body = { userName: $m('#nu').value.trim(), fullName: $m('#nf').value.trim(), role: $m('#nr').value, password: $m('#np').value };
+    const r = await api('POST', '/api/users', body);
+    if (!r.data.ok) { err.textContent = r.data.error; err.classList.remove('hidden'); return; }
+    m.close();
+    await load();
+    if (r.data.tempPassword) showPassword('User added', body.userName, r.data.tempPassword);
+    else toast(`${body.userName} added`);
+  };
+};
+
+function edit(u) {
+  const self = u.UserId === me.id;
+  const m = modal(`
+    <h3>Edit ${esc(u.UserName)}</h3>
+    <form>
+      <div class="field"><label for="ef">Full name</label><input type="text" id="ef" maxlength="100" value="${esc(u.FullName || '')}"></div>
+      <div class="field"><label for="er">Role</label><select id="er" ${self ? 'disabled' : ''}>${roleOptions(u.Role)}</select>
+        ${self ? '<div style="font-size:.8rem;color:var(--muted);margin-top:4px">You cannot change your own role.</div>' : ''}</div>
+      <div class="field"><label><input type="checkbox" id="ea" ${u.IsActive ? 'checked' : ''} ${self ? 'disabled' : ''} style="width:auto;margin-right:6px">Active (can sign in)</label></div>
+      <div class="alert err hidden"></div>
+      <div class="foot" style="justify-content:space-between">
+        ${self ? '<span></span>' : '<button type="button" class="btn btn-danger" data-reset>Reset password</button>'}
+        <span style="display:flex;gap:8px"><button type="button" class="btn btn-light" data-x>Cancel</button><button class="btn btn-primary">Save</button></span>
+      </div>
+    </form>`);
+  const $m = s => m.el.querySelector(s), err = $m('.alert');
+  const fail = msg => { err.textContent = msg; err.classList.remove('hidden'); };
+  $m('[data-x]').onclick = m.close;
+  $m('form').onsubmit = async e => {
+    e.preventDefault();
+    const body = { fullName: $m('#ef').value.trim() };
+    if (!self) { body.role = $m('#er').value; body.isActive = $m('#ea').checked; }
+    const r = await api('PATCH', `/api/users/${u.UserId}`, body);
+    if (!r.data.ok) return fail(r.data.error);
+    m.close(); toast('Saved'); load();
+  };
+  if ($m('[data-reset]')) $m('[data-reset]').onclick = async () => {
+    if (!confirm(`Reset the password for ${u.UserName}? They will be signed out and get a new temporary password.`)) return;
+    const r = await api('PATCH', `/api/users/${u.UserId}`, { resetPassword: true });
+    if (!r.data.ok) return fail(r.data.error);
+    m.close(); load();
+    showPassword('Password reset', u.UserName, r.data.tempPassword);
+  };
+}
+
+(async () => {
+  me = await CS.requireUser(['Admin']);
+  CS.header(me, 'users');
+  load();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#F5B21F">
+<title>Carton Scanner Login</title>
+<link rel="icon" href="/assets/logo.png">
+<link rel="stylesheet" href="/assets/app.css">
+<style>
+  body { min-height: 100vh; display: grid; place-items: center; padding: 16px;
+         background: linear-gradient(180deg, #fff 0, #fff 38%, var(--bg) 38%); }
+  .box { width: 100%; max-width: 380px; }
+  .brand { text-align: center; margin-bottom: 18px; }
+  .brand img { height: 64px; }
+  .brand div { font-weight: 800; margin-top: 6px; letter-spacing: .02em; }
+  .brand span { display: block; font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .1em; font-weight: 600; }
+  .card { padding: 22px; border-top: 4px solid var(--gold); box-shadow: 0 6px 24px rgba(0,0,0,.06); }
+  .card h1 { font-size: 1.15rem; margin-bottom: 4px; }
+  .card p.hint { margin: 0 0 16px; color: var(--muted); font-size: .9rem; }
+  .field + .field { margin-top: 14px; }
+  input { font-size: 1.05rem !important; padding: 11px 12px !important; }
+  .btn-primary { width: 100%; margin-top: 18px; padding: 12px; font-size: 1.02rem; }
+  .foot { text-align: center; color: var(--faint); font-size: .75rem; margin-top: 16px; }
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="brand">
+    <img src="/assets/logo.png" alt="Trilogi">
+    <div>Carton Scanner</div>
+    <span>Inbound · Offloading</span>
+  </div>
+
+  <form class="card" id="loginForm" autocomplete="on">
+    <h1>Sign in</h1>
+    <p class="hint">Use the user name and password from your admin.</p>
+    <div class="field">
+      <label for="u">User name</label>
+      <input type="text" id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+    </div>
+    <div class="field">
+      <label for="p">Password</label>
+      <input type="password" id="p" name="password" autocomplete="current-password" required>
+    </div>
+    <div class="alert err hidden" id="loginErr"></div>
+    <button class="btn btn-primary" id="loginBtn">Sign in</button>
+  </form>
+
+  <form class="card hidden" id="pwForm">
+    <h1>Choose a new password</h1>
+    <p class="hint" id="pwHint">Before you continue, replace the temporary password with your own.</p>
+    <div class="field">
+      <label for="p0">Current (temporary) password</label>
+      <input type="password" id="p0" autocomplete="current-password" required>
+    </div>
+    <div class="field">
+      <label for="p1">New password</label>
+      <input type="password" id="p1" autocomplete="new-password" minlength="6" required>
+    </div>
+    <div class="field">
+      <label for="p2">Repeat new password</label>
+      <input type="password" id="p2" autocomplete="new-password" required>
+    </div>
+    <div class="alert err hidden" id="pwErr"></div>
+    <button class="btn btn-primary" id="pwBtn">Save and continue</button>
+  </form>
+
+  <div class="foot">Trilogi Logistics · Global Logistics Partner</div>
+</div>
+
+<script src="/assets/app.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+
+function nextFor(user) {
+  const n = params.get('next') || '';
+  // only same-site paths; Users can't open the users page
+  if (/^\/(?!\/)/.test(n) && !(user.role !== 'Admin' && n.startsWith('/users'))) return n;
+  return CS.homeFor(user.role);
+}
+function showErr(el, msg) { el.textContent = msg; el.classList.remove('hidden'); }
+
+function askNewPassword(currentPw) {
+  $('loginForm').classList.add('hidden');
+  $('pwForm').classList.remove('hidden');
+  if (currentPw) { $('p0').value = currentPw; $('p0').closest('.field').classList.add('hidden'); $('p1').focus(); }
+  else $('p0').focus();
+}
+
+let user = null;
+
+$('loginForm').onsubmit = async e => {
+  e.preventDefault();
+  $('loginErr').classList.add('hidden');
+  $('loginBtn').disabled = true;
+  const r = await CS.api('POST', '/api/login', { userName: $('u').value.trim(), password: $('p').value });
+  $('loginBtn').disabled = false;
+  if (!r.data.ok) { showErr($('loginErr'), r.data.error || 'Could not sign in'); $('p').select(); return; }
+  user = r.data.user;
+  if (user.mustChangePassword) return askNewPassword($('p').value);
+  location.replace(nextFor(user));
+};
+
+$('pwForm').onsubmit = async e => {
+  e.preventDefault();
+  $('pwErr').classList.add('hidden');
+  if ($('p1').value !== $('p2').value) return showErr($('pwErr'), 'The new passwords do not match');
+  $('pwBtn').disabled = true;
+  const r = await CS.api('POST', '/api/me/password', { currentPassword: $('p0').value, newPassword: $('p1').value });
+  $('pwBtn').disabled = false;
+  if (!r.data.ok) {
+    if (/current password/i.test(r.data.error || '')) $('p0').closest('.field').classList.remove('hidden');
+    return showErr($('pwErr'), r.data.error || 'Could not save the password');
+  }
+  location.replace(nextFor(r.data.user));
+};
+
+// already signed in?
+(async () => {
+  const r = await fetch('/api/me', { credentials: 'same-origin' }).then(x => x.json().then(d => ({ s: x.status, d }))).catch(() => null);
+  if (!r) { showErr($('loginErr'), 'Cannot reach the server. Open this page from the address shown in the server window.'); return; }
+  if (r.s === 200 && r.d.ok) {
+    user = r.d.user;
+    if (user.mustChangePassword) askNewPassword('');
+    else location.replace(nextFor(user));
+    return;
+  }
+  $('u').focus();
+})();
+</script>
+</body>
+</html>
