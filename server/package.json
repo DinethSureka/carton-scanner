@@ -14,6 +14,6 @@
     "pg": "^8.13.1"
   },
   "optionalDependencies": {
-    "msnodesqlv8": "^4.5.0"
+    "msnodesqlv8": "5.5.0"
   }
 }
