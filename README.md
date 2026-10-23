@@ -17,6 +17,17 @@ Handheld scanner / PC browser  ──►  server (Node.js, port 3000)  ──►
 | Delete a wrong scan (dashboard) | | ✓ | ✓ |
 | Add users, change roles, reset passwords | | | ✓ |
 
+## Quick start (copy the folder, double-click)
+
+1. Make sure **Node.js** is installed (`node -v` in Command Prompt shows a version).
+2. Unzip the package anywhere, e.g. `C:\carton-scanner`.
+3. Double-click **`SETUP.bat`** and answer the questions:
+   * **1 = PostgreSQL** – type the pgAdmin admin password **once** (not saved). Setup creates the login
+     `carton_app` and database `container_tracking` by itself.
+   * **2 = SQL Server** – confirm the server name; it signs in with Windows like SSMS.
+4. The server starts and shows the **admin** password and the addresses to open.
+5. Every day after that: double-click **`START.bat`**.
+
 ## Setup (on the PC/desktop that runs the server)
 
 Needs: **Node.js LTS**, plus **one** database: **SQL Server Express** (SSMS) *or* **PostgreSQL** (pgAdmin).
